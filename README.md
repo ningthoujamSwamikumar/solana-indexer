@@ -19,10 +19,14 @@ The aim of this project is to build a reliable and performant at scale indexer, 
     > - Fetch latest slot
     > - Fetch a block
     > - print transactions
-- Phase 1: End to end pipeline
+- Phase 1: End to end pipeline ✅
     > Goal: Index blocks continuously
     > - fetch slot -> fetch block -> store in DB -> loop
     > - Simple DB schema: slots and transactions (raw JSON)
+    
+    > Note 1. Looping and fetching block may be inefficient as we'll be hitting the rpc endpoint continuously. We might get rate limited or bandwidth limited.
+
+    > Note 2. A block is produced every 400ms which means we will fetching same slots multiple times, and we might get unique key conflicts, and redundancies
 - Phase 2: Add structure to the data to be usable
     > Goal: Get all transfers for a wallet
     > - decode SOL transfers and SPL token transfers

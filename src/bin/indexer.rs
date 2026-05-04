@@ -25,10 +25,10 @@ async fn main() -> Result<()> {
     // connect to database
     let pg_pool = PgPool::connect(DATABASE_URL).await?;
     // create schemas
-    sqlx::query("CREATE TABLE blocks (slot BIGINT PRIMARY KEY, blockhash TEXT, parent_slot BIGINT, block_time BIGINT);")
+    sqlx::query("CREATE TABLE IF NOT EXISTS blocks (slot BIGINT PRIMARY KEY, blockhash TEXT, parent_slot BIGINT, block_time BIGINT);")
     .execute(&pg_pool).await?;
     println!("blocks table created");
-    sqlx::query("CREATE TABLE transactions (signature TEXT PRIMARY KEY, slot BIGINT REFERENCES blocks(slot), tx_base64 TEXT NOT NULL, meta JSONB);")
+    sqlx::query("CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, slot BIGINT REFERENCES blocks(slot), tx_base64 TEXT NOT NULL, meta JSONB);")
     .execute(&pg_pool).await?;
     println!("transactions table created");
 
