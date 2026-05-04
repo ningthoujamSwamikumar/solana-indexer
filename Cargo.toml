@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+base64 = "0.22.1"
+bincode = "1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 solana-client = "3.1.14"
+sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio"] }
 tokio = { version = "1.52.1", features = ["full"] }

@@ -14,7 +14,7 @@ The aim of this project is to build a reliable and performant at scale indexer, 
 - Dockerized for easy deployments
 
 # Roadmap
-- Phase 0: Cli that prints latest block data 
+- Phase 0: Cli that prints latest block data ✅
     > Goal: Learn the basics
     > - Fetch latest slot
     > - Fetch a block
