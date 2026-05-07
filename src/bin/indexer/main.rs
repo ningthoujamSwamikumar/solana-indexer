@@ -18,6 +18,9 @@ const LOCALNET_URL: &str = "http://localhost:8899";
 
 const DATABASE_URL: &str = "postgresql://postgres@localhost:5432/solana_index";
 
+mod backfill;
+mod processors;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Welcome to Solana Indexer!!");
@@ -31,6 +34,34 @@ async fn main() -> Result<()> {
     sqlx::query("CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, slot BIGINT REFERENCES blocks(slot), tx_base64 TEXT NOT NULL, meta JSONB);")
     .execute(&pg_pool).await?;
     println!("transactions table created");
+    //accounts table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS accounts (pubkey TEXT PRIMARY KEY, first_seen_slot BIGINT",
+    )
+    .execute(&pg_pool)
+    .await?;
+    // transfer table
+    // base account is for funding accounts whose authority is the base account
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS transfers 
+        (txn_signature TEXT PRIMAR KEY REFERENCES transactions(signature),
+        from_address TEXT REFERENCES accounts(pubkey),
+        base_address TEXT REFERENCES accounts(pubkey),
+        to_address TEXT REFERENCES accounts(pubkey),
+        amount NUMERIC,
+        mint TEXT);",
+    )
+    .execute(&pg_pool)
+    .await?;
+    // accounts in transactions - a composite table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS transaction_accounts 
+    (signature TEXT NOT NULL REFERENCES transactions(signature),
+    account_pubkey TEXT NOT NULL REFERENCES accounts(pubkey),
+    PRIMARY KEY (signature, account_pubkey));",
+    )
+    .execute(&pg_pool)
+    .await?;
 
     let rpc_client =
         RpcClient::new_with_commitment(MAINNET_URL.to_string(), CommitmentConfig::finalized());
