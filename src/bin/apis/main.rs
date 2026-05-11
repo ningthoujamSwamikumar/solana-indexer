@@ -1,10 +1,10 @@
 use axum::{Json, Router, extract::State, routing};
+use solana_indexer::daos::BlockDao;
 use sqlx::{PgPool, Pool, Postgres};
 use tokio::net::TcpListener;
 
-use crate::{daos::Block, errors::ApiError};
+use crate::errors::ApiError;
 
-mod daos;
 mod errors;
 
 #[tokio::main]
@@ -33,12 +33,13 @@ async fn hello_world() -> &'static str {
     "hello_world"
 }
 
-async fn get_blocks(State(pg_pool): State<Pool<Postgres>>) -> Result<Json<Vec<Block>>, ApiError> {
-    let blocks = sqlx::query_as::<_, Block>("SELECT * from blocks;")
+async fn get_blocks(
+    State(pg_pool): State<Pool<Postgres>>,
+) -> Result<Json<Vec<BlockDao>>, ApiError> {
+    let blocks = sqlx::query_as::<_, BlockDao>("SELECT * from blocks;")
         .fetch_all(&pg_pool)
         .await
         .map_err(|e| ApiError::InternalServerError(Some(e.to_string())))?;
 
     Ok(Json(blocks))
 }
-
