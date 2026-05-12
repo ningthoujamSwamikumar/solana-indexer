@@ -1,16 +1,11 @@
 use anyhow::{Ok, Result};
 use base64::Engine;
-use serde::Deserialize;
 use solana_client::{
     nonblocking::rpc_client::RpcClient,
     rpc_request::Address,
     rpc_response::{
         OptionSerializer, UiLoadedAddresses, UiTransactionStatusMeta, UiTransactionTokenBalance,
-    },
-    // Using this leads to version conflicts for solana-message
-    // rpc_response::transaction::{
-    //     CompiledInstruction, VersionedMessage, versioned::VersionedTransaction,
-    // },
+    }
 };
 use solana_indexer::daos::TransactionDao;
 use solana_sdk::{

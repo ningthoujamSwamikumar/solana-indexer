@@ -8,7 +8,6 @@ use solana_client::{
         UiConfirmedBlock, //transaction::versioned::VersionedTransaction,
     },
 };
-use solana_indexer::daos::{AccountDao, TransferDao, TxnAccountDao};
 use sqlx::{PgPool, types::Json};
 
 use crate::backfill::{

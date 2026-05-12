@@ -1,5 +1,4 @@
 use serde::Serialize;
-use serde_json::Value;
 use solana_client::rpc_response::UiTransactionStatusMeta;
 use sqlx::{prelude::FromRow, types::Json};
 

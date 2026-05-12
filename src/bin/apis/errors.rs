@@ -1,5 +1,6 @@
 use axum::{http::StatusCode, response::IntoResponse};
 
+#[allow(unused)]
 pub enum ApiError {
     InternalServerError(Option<String>),
     NotFound(Option<String>),
