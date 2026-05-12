@@ -9,7 +9,7 @@ The aim of this project is to build a reliable and performant at scale indexer, 
 - Concurrent ingestion using async Rust
 - Hybrid architecture: RPC backfill + Websocket streaming
 - Fault-tolerant with automatic resume from last processed slot
-- REST API for querying indexed blockchain data
+- REST API for querying indexed blockchain data 
 - Powers wallet analytics and transaction insights
 - Dockerized for easy deployments
 
@@ -27,7 +27,7 @@ The aim of this project is to build a reliable and performant at scale indexer, 
     > Note 1. Looping and fetching block may be inefficient as we'll be hitting the rpc endpoint continuously. We might get rate limited or bandwidth limited.
 
     > Note 2. A block is produced every 400ms which means we will fetching same slots multiple times, and we might get unique key conflicts, and redundancies
-- Phase 2: Add structure to the data to be usable
+- Phase 2: Add structure to the data to be usable ✅
     > Goal: Get all transfers for a wallet
     > - decode SOL transfers and SPL token transfers
     > - normalize tables - transfers and accounts

@@ -81,13 +81,24 @@ async fn main() -> Result<()> {
     let rpc_client =
         RpcClient::new_with_commitment(MAINNET_URL.to_string(), CommitmentConfig::finalized());
 
-    println!("================ BACKFILL STARTED ==================");
-    backfill::backfill_transfers_accounts(&pg_pool, &rpc_client).await?;
-    println!("================ BACKFILL COMPLETED ================");
+    // println!("================ BACKFILL STARTED ==================");
+    // backfill::backfill_transfers_accounts(&pg_pool, &rpc_client).await?;
+    // println!("================ BACKFILL COMPLETED ================");
 
-    let slot = rpc_client.get_slot().await?;
+    //fetch the next slot after the last commitment
+    let last_committed_slot: i64 = sqlx::query_scalar("SELECT MAX(slot) FROM blocks;")
+        .fetch_one(&pg_pool)
+        .await?;
+    println!("Last committed slot: {}", last_committed_slot);
+
+    let mut slot: u64 = rpc_client.get_slot().await?;
     println!("\n**************** new slot: {slot} *************************");
-    println!("**************** new slot: {slot} *************************\n");
+
+    if last_committed_slot > 0 {
+        slot = (last_committed_slot + 1) as u64;
+    }
+
+    let tx = pg_pool.begin().await?;
 
     let UiConfirmedBlock {
         block_time,
@@ -154,12 +165,9 @@ async fn main() -> Result<()> {
         .await?;
 
         // extract accounts, and transfers from the txn
-        let (accounts, transfers) = get_accounts_and_transfers_from_txn_message(
-            versioned_tx.message,
-            tx.meta,
-            &rpc_client,
-        )
-        .await?;
+        let (accounts, transfers) =
+            get_accounts_and_transfers_from_txn_message(versioned_tx.message, tx.meta, &rpc_client)
+                .await?;
 
         // batch insert the accounts
         let accounts_insertion =
@@ -184,6 +192,8 @@ async fn main() -> Result<()> {
             txn_acc_insertion.rows_affected()
         );
     }
+
+    tx.commit().await?;
 
     Ok(())
 }
