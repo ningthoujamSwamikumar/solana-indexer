@@ -5,7 +5,7 @@ use solana_client::{
     rpc_request::Address,
     rpc_response::{
         OptionSerializer, UiLoadedAddresses, UiTransactionStatusMeta, UiTransactionTokenBalance,
-    }
+    },
 };
 use solana_indexer::daos::TransactionDao;
 use solana_sdk::{
@@ -18,11 +18,17 @@ use spl_token_2022_interface::{
 };
 use spl_token_interface::{instruction::TokenInstruction, state::Account};
 
-use sqlx::{Execute, Pool, Postgres, QueryBuilder, postgres::PgQueryResult, types::Json};
+use sqlx::{
+    Execute, PgConnection, Postgres, QueryBuilder, postgres::PgQueryResult,
+    types::Json,
+};
 
 /// Find all the transactions present in the transactions table and fill their corresponding entries into new tables created <br/>
 /// like accounts, transfers, and transaction accounts
-pub async fn backfill_transfers_accounts(pg_pool: &Pool<Postgres>, rpc: &RpcClient) -> Result<()> {
+pub async fn backfill_transfers_accounts(
+    executor: &mut PgConnection,
+    rpc: &RpcClient,
+) -> Result<()> {
     /*
     let accounts: Vec<AccountDao> = sqlx::query_as("SELECT * from accounts;")
         .fetch_all(pg_pool)
@@ -42,7 +48,7 @@ pub async fn backfill_transfers_accounts(pg_pool: &Pool<Postgres>, rpc: &RpcClie
     //go through all recorded transactions
     let txns: Vec<TransactionDao> =
         sqlx::query_as("SELECT signature, slot, tx_base64, meta FROM transactions;")
-            .fetch_all(pg_pool)
+            .fetch_all(&mut *executor)
             .await?;
     for TransactionDao {
         signature,
@@ -63,7 +69,7 @@ pub async fn backfill_transfers_accounts(pg_pool: &Pool<Postgres>, rpc: &RpcClie
             get_accounts_and_transfers_from_txn_message(txn.message, txn_meta, rpc).await?;
 
         //insert accounts into accounts
-        let account_insertion = batch_insert_into_accounts(&accounts, slot, pg_pool).await?;
+        let account_insertion = batch_insert_into_accounts(&accounts, slot, executor).await?;
         println!(
             "{} rows inserted into accounts for slot {}",
             account_insertion.rows_affected(),
@@ -88,7 +94,7 @@ pub async fn backfill_transfers_accounts(pg_pool: &Pool<Postgres>, rpc: &RpcClie
 
         //insert transfers into transfers
         let transfer_insertions =
-            batch_insert_into_transfers(transfers, &signature, pg_pool).await?;
+            batch_insert_into_transfers(transfers, &signature, executor).await?;
         println!(
             "{} rows inserted into transfers for slot {} and for txn {}",
             transfer_insertions.rows_affected(),
@@ -98,7 +104,7 @@ pub async fn backfill_transfers_accounts(pg_pool: &Pool<Postgres>, rpc: &RpcClie
 
         //insert transaction accounts into transaction_accounts
         let txn_acc_insertions =
-            batch_insert_into_transaction_accounts(accounts, &signature, pg_pool).await?;
+            batch_insert_into_transaction_accounts(accounts, &signature, executor).await?;
         println!(
             "{} rows inserted into transaction_accounts for slot {} and txn {}",
             txn_acc_insertions.rows_affected(),
@@ -594,7 +600,7 @@ pub async fn resolve_transfer_addresses(
 pub async fn batch_insert_into_accounts(
     accounts: &Vec<TxnAccount>,
     slot: i64,
-    pg_pool: &Pool<Postgres>,
+    executor: &mut PgConnection,
 ) -> Result<PgQueryResult> {
     // the trailing space in the initial sql fragment is important to not get errors, and as query builder doesn't automatically appends it
     let mut accounts_qb: QueryBuilder<Postgres> =
@@ -604,7 +610,7 @@ pub async fn batch_insert_into_accounts(
     });
     // appends conflict handling
     accounts_qb.push(" ON CONFLICT DO NOTHING;");
-    let account_insertion = accounts_qb.build().execute(pg_pool).await?;
+    let account_insertion = accounts_qb.build().execute(executor).await?;
 
     Ok(account_insertion)
 }
@@ -612,11 +618,11 @@ pub async fn batch_insert_into_accounts(
 pub async fn batch_insert_into_transfers(
     transfers: Vec<Transfer>,
     sig: &str,
-    pg_pool: &Pool<Postgres>,
+    executor: &mut PgConnection,
 ) -> Result<PgQueryResult> {
     if transfers.is_empty() {
         println!("Found empty transfers! Running no op query.");
-        let empty_query = sqlx::query("SELECT 1;").execute(pg_pool).await?;
+        let empty_query = sqlx::query("SELECT 1;").execute(executor).await?;
         return Ok(empty_query);
     }
 
@@ -652,7 +658,7 @@ pub async fn batch_insert_into_transfers(
         );
     }
 
-    let transfer_insertions = transfer_query.execute(pg_pool).await?;
+    let transfer_insertions = transfer_query.execute(executor).await?;
 
     Ok(transfer_insertions)
 }
@@ -660,7 +666,7 @@ pub async fn batch_insert_into_transfers(
 pub async fn batch_insert_into_transaction_accounts(
     accounts: Vec<TxnAccount>,
     sig: &str,
-    pg_pool: &Pool<Postgres>,
+    executor: &mut PgConnection,
 ) -> Result<PgQueryResult> {
     let mut txn_acc_qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "INSERT INTO transaction_accounts (signature, account_pubkey, is_signer, is_writable) ",
@@ -675,7 +681,7 @@ pub async fn batch_insert_into_transaction_accounts(
         },
     );
     txn_acc_qb.push(" ON CONFLICT DO NOTHING;");
-    let txn_acc_insertions = txn_acc_qb.build().execute(pg_pool).await?;
+    let txn_acc_insertions = txn_acc_qb.build().execute(executor).await?;
 
     Ok(txn_acc_insertions)
 }

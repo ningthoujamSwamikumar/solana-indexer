@@ -96,9 +96,11 @@ async fn main() -> Result<()> {
 
     if last_committed_slot > 0 {
         slot = (last_committed_slot + 1) as u64;
+        println!("backfilling slot : {slot}");
     }
 
-    let tx = pg_pool.begin().await?;
+    // start postgres transaction
+    let mut pg_tx = pg_pool.begin().await?;
 
     let UiConfirmedBlock {
         block_time,
@@ -130,7 +132,7 @@ async fn main() -> Result<()> {
     .bind(blockhash)
     .bind(parent_slot as i64)
     .bind(block_time.unwrap())
-    .execute(&pg_pool)
+    .execute(&mut *pg_tx)
     .await?;
 
     for tx in transactions.unwrap_or(vec![]) {
@@ -161,7 +163,7 @@ async fn main() -> Result<()> {
         .bind(slot as i64)
         .bind(tx_base64)
         .bind(Json(&tx.meta))
-        .execute(&pg_pool)
+        .execute(&mut *pg_tx)
         .await?;
 
         // extract accounts, and transfers from the txn
@@ -171,14 +173,14 @@ async fn main() -> Result<()> {
 
         // batch insert the accounts
         let accounts_insertion =
-            batch_insert_into_accounts(&accounts, slot as i64, &pg_pool).await?;
+            batch_insert_into_accounts(&accounts, slot as i64, &mut *pg_tx).await?;
         println!(
             "inserted {} rows into accounts",
             accounts_insertion.rows_affected()
         );
 
         // batch insert the transfers
-        let transfer_insertion = batch_insert_into_transfers(transfers, &sig, &pg_pool).await?;
+        let transfer_insertion = batch_insert_into_transfers(transfers, &sig, &mut *pg_tx).await?;
         println!(
             "inserted {} rows into transfers",
             transfer_insertion.rows_affected()
@@ -186,14 +188,14 @@ async fn main() -> Result<()> {
 
         // batch insert into transaction accounts
         let txn_acc_insertion =
-            batch_insert_into_transaction_accounts(accounts, &sig, &pg_pool).await?;
+            batch_insert_into_transaction_accounts(accounts, &sig, &mut *pg_tx).await?;
         println!(
             "inserted {} rows into transaction_accounts",
             txn_acc_insertion.rows_affected()
         );
     }
 
-    tx.commit().await?;
+    pg_tx.commit().await?;
 
     Ok(())
 }
