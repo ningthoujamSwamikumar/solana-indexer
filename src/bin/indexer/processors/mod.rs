@@ -1,6 +1,9 @@
 pub mod accounts_and_transfers;
 pub mod batch_inserts;
 pub mod blocks;
+pub mod block_subscription;
+pub mod next_block;
+pub mod dex;
 
 use solana_client::rpc_request::Address;
 
