@@ -1,22 +1,23 @@
-use anyhow::{Ok, Result};
-use base64::{Engine, engine::general_purpose};
-use solana_client::{
-    nonblocking::rpc_client::RpcClient,
-    rpc_config::{CommitmentConfig, RpcBlockConfig, UiTransactionEncoding},
-    rpc_response::{
-        EncodedTransaction,
-        UiConfirmedBlock, //transaction::versioned::VersionedTransaction,
-    },
-};
-use sqlx::{PgPool, types::Json};
+use std::sync::Arc;
 
-use crate::backfill::{
-    batch_insert_into_accounts, batch_insert_into_transaction_accounts,
-    batch_insert_into_transfers, get_accounts_and_transfers_from_txn_message,
+use futures::StreamExt;
+
+use anyhow::{Ok, Result};
+use solana_client::{
+    nonblocking::{pubsub_client::PubsubClient, rpc_client::RpcClient},
+    rpc_config::{
+        CommitmentConfig, RpcBlockConfig, RpcBlockSubscribeConfig, RpcTransactionLogsConfig,
+        UiTransactionEncoding,
+    },
+    rpc_response::{RpcBlockUpdate, UiConfirmedBlock},
 };
+use sqlx::{PgPool, Postgres};
+use tokio::sync::Semaphore;
+
+use crate::processors::blocks::process_blocks;
 
 #[allow(dead_code)]
-const MAINNET_URL: &str = "https://api.mainnet.solana.com";
+const MAINNET_URL: &str = "api.mainnet.solana.com";
 #[allow(dead_code)]
 const DEVNET_URL: &str = "https://api.devnet.solana.com";
 #[allow(dead_code)]
@@ -25,65 +26,38 @@ const LOCALNET_URL: &str = "http://localhost:8899";
 const DATABASE_URL: &str = "postgresql://postgres@localhost:5432/solana_index";
 
 mod backfill;
+mod create_tables;
 mod processors;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Welcome to Solana Indexer!!");
 
+    // load the .env file into the process environments
+    dotenv::dotenv().ok();
+
+    // read env vars
+    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| format!("https://{}", MAINNET_URL));
+    let ws_rpc_url =
+        std::env::var("WEBSOCKET_RPC_URL").unwrap_or_else(|_| format!("wss://{}", MAINNET_URL));
+
     // connect to database
     let pg_pool = PgPool::connect(DATABASE_URL).await?;
-    // create schemas
-    // blocks table to store block infos
-    sqlx::query("CREATE TABLE IF NOT EXISTS blocks (slot BIGINT PRIMARY KEY, blockhash TEXT, parent_slot BIGINT, block_time BIGINT);")
-    .execute(&pg_pool).await?;
-    println!("blocks table created");
-    // transactions table to store raw transactions in a block
-    sqlx::query("CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, slot BIGINT REFERENCES blocks(slot), tx_base64 TEXT NOT NULL, meta JSONB);")
-    .execute(&pg_pool).await?;
-    println!("transactions table created");
-    //accounts table to store all accounts seen in transactions
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS accounts (pubkey TEXT PRIMARY KEY, first_seen_slot BIGINT);",
-    )
-    .execute(&pg_pool)
-    .await?;
-    println!("accounts table created");
-    // transfer table to store all SOL and spl transfers found in transactions
-    // base account is for funding accounts whose authority is the base account
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS transfers 
-        (txn_signature TEXT PRIMARY KEY REFERENCES transactions(signature),
-        program_id TEXT NOT NULL,
-        from_address TEXT REFERENCES accounts(pubkey),
-        base_address TEXT REFERENCES accounts(pubkey),
-        to_address TEXT REFERENCES accounts(pubkey),
-        amount BIGINT,
-        mint_address TEXT);",
-    )
-    .execute(&pg_pool)
-    .await?;
-    println!("transfers table created");
-    // accounts in transactions - a composite table
-    // stores all accounts used in every transaction along with their account meta information
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS transaction_accounts 
-        (signature TEXT NOT NULL REFERENCES transactions(signature),
-        account_pubkey TEXT NOT NULL REFERENCES accounts(pubkey),
-        is_signer BOOL NOT NULL,
-        is_writable BOOL NOT NULL,
-        PRIMARY KEY (signature, account_pubkey));",
-    )
-    .execute(&pg_pool)
-    .await?;
-    println!("transaction_accounts table created");
+    create_tables::create_tables(&mut *pg_pool.acquire().await?).await?;
 
-    let rpc_client =
-        RpcClient::new_with_commitment(MAINNET_URL.to_string(), CommitmentConfig::finalized());
+    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
+    let arc_rpc = Arc::new(rpc_client);
 
-    // println!("================ BACKFILL STARTED ==================");
+    // backfill new tables: accounts, transaction_accounts, transfers from the already existing block and transactions tables
     // backfill::backfill_transfers_accounts(&pg_pool, &rpc_client).await?;
-    // println!("================ BACKFILL COMPLETED ================");
+
+    // subscribe to blocks through websockets
+    // let live_stream_worker_handle = tokio::spawn(handle_log_streams(
+    //     pg_pool.clone(),
+    //     arc_rpc.clone(),
+    //     ws_rpc_url,
+    // ));
+    // live_stream_worker_handle.await??;
 
     //fetch the next slot after the last commitment
     let last_committed_slot: i64 = sqlx::query_scalar("SELECT MAX(slot) FROM blocks;")
@@ -91,7 +65,7 @@ async fn main() -> Result<()> {
         .await?;
     println!("Last committed slot: {}", last_committed_slot);
 
-    let mut slot: u64 = rpc_client.get_slot().await?;
+    let mut slot: u64 = arc_rpc.get_slot().await?;
     println!("\n**************** new slot: {slot} *************************");
 
     if last_committed_slot > 0 {
@@ -99,20 +73,7 @@ async fn main() -> Result<()> {
         println!("backfilling slot : {slot}");
     }
 
-    // start postgres transaction
-    let mut pg_tx = pg_pool.begin().await?;
-
-    let UiConfirmedBlock {
-        block_time,
-        blockhash,
-        transactions,
-        parent_slot,
-        previous_blockhash: _,
-        signatures: _,
-        rewards: _,
-        num_reward_partitions: _,
-        block_height: _,
-    } = rpc_client
+    let block: UiConfirmedBlock = arc_rpc
         .get_block_with_config(
             slot,
             RpcBlockConfig {
@@ -124,78 +85,70 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    sqlx::query(
-        "INSERT INTO blocks (slot, blockhash, parent_slot, block_time)
-            VALUES ($1, $2, $3, $4);",
-    )
-    .bind(slot as i64)
-    .bind(blockhash)
-    .bind(parent_slot as i64)
-    .bind(block_time.unwrap())
-    .execute(&mut *pg_tx)
-    .await?;
+    process_blocks(block, slot, pg_pool, &arc_rpc).await?;
 
-    for tx in transactions.unwrap_or(vec![]) {
-        // Extract base64 string from the EncodedTransaction enum
-        let EncodedTransaction::Binary(tx_base64, _) = tx.transaction else {
-            continue; //Skip for some reason it's not base64
-        };
+    Ok(())
+}
 
-        // Decode the base64 into raw bytes
-        let tx_bytes = general_purpose::STANDARD.decode(&tx_base64)?;
+/// Subscribes to websocket rpc, and recieves block streams
+async fn handle_log_streams(
+    pg_pool: PgPool,
+    arc_rpc: Arc<RpcClient>,
+    ws_rpc_url: String,
+) -> Result<()> {
+    println!("Block Live Stream task");
+    // create a message channel to communicate between the websocket handle and the workers
+    // this will handle the backpressure from fast incoming messages from websocket
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<RpcBlockUpdate>(100);
 
-        // Deserialized the bytes into VersionedTransaction
-        let versioned_tx = bincode::deserialize::<solana_sdk::transaction::VersionedTransaction>(
-            tx_bytes.as_slice(),
-        )?;
+    // Semaphor limits the pool size or number of workers
+    let semaphor = Arc::new(Semaphore::new(pg_pool.size() as usize));
+    let dispatcher_pg_pool = pg_pool.clone();
+    let dispatcher_arc_rpc = arc_rpc.clone();
+    // Receiver + Dispatcher + Permit handler (like a bouncer in a club)
+    tokio::spawn(async move {
+        while let Some(RpcBlockUpdate {
+            slot,
+            block,
+            err: _,
+        }) = rx.recv().await
+        {
+            // wait until a worker slot is available
+            let permit = semaphor.clone().acquire_owned().await.unwrap();
+            // clone the pointers
+            let task_pg_pool = dispatcher_pg_pool.clone();
+            let task_rpc_client = dispatcher_arc_rpc.clone();
 
-        let sig = versioned_tx
-            .signatures
-            .first()
-            .map(|s| s.to_string())
-            .unwrap_or_default();
+            // spawn new worker
+            tokio::spawn(async move {
+                if let Some(block) = block {
+                    process_blocks(block, slot, task_pg_pool, &task_rpc_client)
+                        .await
+                        .unwrap();
+                }
+                // permit drops here, opening up a slot for the next block processor
+                drop(permit);
+            });
+        }
+    });
 
-        sqlx::query(
-            "INSERT INTO transactions (signature, slot, tx_base64, meta)
-                VALUES ($1, $2, $3, $4);",
+    // establish websocket connection and listen to logs
+    let pubsub_client = PubsubClient::new(ws_rpc_url).await?;
+    let (mut block_notifications, _unsubscribe_blocks) = pubsub_client
+        .block_subscribe(
+            solana_client::rpc_config::RpcBlockSubscribeFilter::All,
+            Some(RpcBlockSubscribeConfig {
+                transaction_details: Some(solana_client::rpc_config::TransactionDetails::Full),
+                encoding: Some(UiTransactionEncoding::Base64),
+                ..Default::default()
+            }),
         )
-        .bind(sig.clone())
-        .bind(slot as i64)
-        .bind(tx_base64)
-        .bind(Json(&tx.meta))
-        .execute(&mut *pg_tx)
         .await?;
 
-        // extract accounts, and transfers from the txn
-        let (accounts, transfers) =
-            get_accounts_and_transfers_from_txn_message(versioned_tx.message, tx.meta, &rpc_client)
-                .await?;
-
-        // batch insert the accounts
-        let accounts_insertion =
-            batch_insert_into_accounts(&accounts, slot as i64, &mut *pg_tx).await?;
-        println!(
-            "inserted {} rows into accounts",
-            accounts_insertion.rows_affected()
-        );
-
-        // batch insert the transfers
-        let transfer_insertion = batch_insert_into_transfers(transfers, &sig, &mut *pg_tx).await?;
-        println!(
-            "inserted {} rows into transfers",
-            transfer_insertion.rows_affected()
-        );
-
-        // batch insert into transaction accounts
-        let txn_acc_insertion =
-            batch_insert_into_transaction_accounts(accounts, &sig, &mut *pg_tx).await?;
-        println!(
-            "inserted {} rows into transaction_accounts",
-            txn_acc_insertion.rows_affected()
-        );
+    // handle the incoming websocket messages
+    while let Some(block_response) = block_notifications.next().await {
+        tx.send(block_response.value).await?;
     }
-
-    pg_tx.commit().await?;
 
     Ok(())
 }

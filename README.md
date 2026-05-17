@@ -32,13 +32,15 @@ The aim of this project is to build a reliable and performant at scale indexer, 
     > - decode SOL transfers and SPL token transfers
     > - normalize tables - transfers and accounts
     > - use Anchor framework IDL (if needed) 
-- Phase 3: Make it Reliable
+- Phase 3: Make it Reliable ✅
     > Goal: Incremental Sync + Backfill
     > - Start from a given slot
     > - Resume after restart
     > - Backfill past data
     > - store last processed slot
     > - Kill process -> restart -> continues correctly
+
+    > Note: Since we use public rpc endpoint and they have rate limit, we will fetch just one slot for backfill.
 - Phase 4: Move from batch to live system
     > Goal: Streaming + Near Real-time
     > - Websocket subscription (logs/slots)
